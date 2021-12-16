@@ -1,5 +1,7 @@
 # A blame ascribing protocol towards ensuring time limitation of stuck HTLCs in flight.
 
+**This is a Draft version and Work in Progress.**
+
 I was reviewing the [HOLD fee proposal by Joost](https://github.com/lightning/bolts/pull/843) and the [excellent summary of known mitigation techniques by t-bast](https://github.com/t-bast/lightning-docs/blob/master/spam-prevention.md) when I revisited the very [first idea to mitigate HTLC spam via onions](https://lists.linuxfoundation.org/pipermail/lightning-dev/2015-August/000135.html) that was discussed back in 2015 by Rusty, AJ and a few others. At that time the idea was to ascribe blame to a malicious actor by triggering a force close and proofing ones own honesty by providing the force close transaction. I think there is a lot of merit to the idea of ascribing blame and I think it might be possible with the help of [onion messages](https://github.com/lightning/bolts/pull/759) without the necessity to trigger full force closes. 
 
 As I am not entirely sure if this suggestion is a reasonable improvement (it certainly does not resolve all the issues we have) I did not spec out the details and message formats and fields but only described the high level idea. I hope this is sufficient to discuss the principles and get the feedback from you if you consider this to be of use and if you think we should work on the details. 
@@ -33,6 +35,29 @@ Of course a malicious node `M` might after receiving an `update_add_htlc` from a
 A node on an upstream channel could verify that `N` was indeed honest and has also delivered these messages to `M` by sending these messages via a different path as an onion message to `M`. 
 
 Now if `M` was indeed dishonest `M` would not respond to the onion message indicating to the upstream node that `N` was honestly ascribing blame to `M`. Otherwise `M` could try to move the state forward and proof this to the upstream node in the onion reply indicating that it was actually `N` who tried to act malicious. In any case if there was a disagreement the upstream nodes would in any case learn that there is a problem on the channel between `N` and `M`.
+
+Security considerations:
+=========
+On the Mailinglist [Bastien Teinturier noted the following](https://lists.linuxfoundation.org/pipermail/lightning-dev/2021-December/003409.html):
+
+> If we have a payment: A -> B -> C -> D and C is malicious.
+C can forward the payment to D, and even wait for D to correctly settle it
+(with `update_fulfill_htlc` or `update_fail_htlc`), but then withhold that
+message instead of forwarding it to B. Then C blames D, everyone agrees that
+D is bad node that must be avoided. Later, C unblocks the `update_*_htlc`
+and everyone thinks that D hodled the HTLC for a long time, which is bad.
+
+The above issue can be addressed by `B` verifying the proof it received from `C`. This can be done by presenting the proof to `D` via an onion message along a different node than `C`. If `D` cannot refute the proof by presenting a newer state to `B` then `B` knows that `D` was indeed dishonest. Otherwise `D` and `B` have discovered that `C` was misbehaving and tried to frame `D`.
+
+`B` indicates to `D` that it is allowed to ask such verification question by include the received proof from `C`. Note that `B` could never own such proof if `C` has not communicated with `B`. Of course if `C` has never talked to `B` in the first place `B` would have send a `TEMPORARY_CHANNEL_FAILURE` and if `C` stopped during the update of the statemachine to communicate to `B` then `B` can blame `C` via the above mechanism and `A` can verify the claim it received from `B`. 
+
+Also `B` cannot just send garbage to `D` and try to frame `C` because as soon as `B` would frame `C` the upstream node `A` would talk to `C` and recognize that it was `B` who was dishonest.
+ 
+Going back to the situation assuming that `C` and `D` have indeed already successfully resolved the HTLC then the node `D` could in the reply to `B` even securely include the preimage allowing `B` to reclaim the funds from `A` and settle the HTLC in the A->B channel. Only the HTLC in the B->C channel would be locked which doesn't have to bother `B` as `B` expects that `C` is pulling / settling the HTLC anyway.  Only `C` would have the disadvantage as it is not pulling its liquidity as soon as it can. 
+
+So far - besides a rather complicated flow of information - I do not see why the principles of my suggestion would not be possible to work at any other point of the channel state machine. So when queried by `B` the node  `D` could always replay with the latest state it has in the C->D channel indicating to `B` that `C` was dishonest.
+
+Of course we could ask now what is if `B` is also malicious? In this case `B` could propagate the `blame_channel` back but `A` could again use the onion trick to verify and discover that `B` and `C` are not following the protocol. 
 
 
 Limitations:
